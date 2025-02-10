@@ -41,34 +41,43 @@ def read_keypad():
     return None
 
 def fetch_order_by_code(code):
-    """Checks if the entered code exists in the local database."""
+    """
+    Checks if the entered code exists in the local database.
+    Returns (order_id, action) where action is 'pickup' or 'return'.
+    """
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute("""
-        SELECT order_id FROM orders 
-        WHERE pickup_code = ? OR return_code = ?
-    """, (code, code))
+
+    # Check if code matches pickup_code
+    cursor.execute("SELECT order_id FROM orders WHERE pickup_code = ?", (code,))
+    result = cursor.fetchone()
+    if result:
+        conn.close()
+        return result[0], "pickup"  # Order found as a pickup
+
+    # Check if code matches return_code
+    cursor.execute("SELECT order_id FROM orders WHERE return_code = ?", (code,))
     result = cursor.fetchone()
     conn.close()
-    return result[0] if result else None
+    if result:
+        return result[0], "return"  # Order found as a return
+
+    return None, None  # No valid order found
 
 def fetch_door_items(order_id):
     """Fetches doors associated with items in an order."""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute("""
-        SELECT DISTINCT door FROM order_items 
-        WHERE order_id = ?
-    """, (order_id,))
+    cursor.execute("SELECT DISTINCT door FROM order_items WHERE order_id = ?", (order_id,))
     doors = [row[0] for row in cursor.fetchall()]
     conn.close()
     return doors
 
-def send_order_update(order_id):
-    """Notifies the remote API that an order has been picked up."""
-    payload = {"api_key": API_KEY, "order_id": order_id, "action": "pickup"}
+def send_order_update(order_id, action):
+    """Notifies the remote API whether the order was picked up or returned."""
+    payload = {"api_key": API_KEY, "order_id": order_id, "action": action}
     try:
-        response = requests.get(API_URL, params=payload)
+        response = requests.get(API_URL + "update_order_pickup.php", params=payload)
         return response.status_code == 200
     except requests.exceptions.RequestException as e:
         print(f"Error sending order update: {e}")
@@ -77,7 +86,9 @@ def send_order_update(order_id):
 def open_relays(doors):
     """
     Sends relay commands to Arduino to open specific doors.
-    - Adds a small delay after every 2 relays.
+    - All commands are sent at once.
+    - Each door has a 500ms additional wait time before activation.
+    - All doors stay open for 5000ms.
     """
     if not doors:
         return
@@ -85,19 +96,17 @@ def open_relays(doors):
         ser = serial.Serial(SERIAL_PORT, 9600, timeout=1)
         time.sleep(2)  # Wait for serial connection
 
-        relay_groups = []
-        for i in range(0, len(doors), 2):  # Process 2 doors at a time
-            group = doors[i:i + 2]
-            relay_commands = [f"{door}:500:3000" for door in group]  # 500ms wait, 3000ms duration
-            relay_groups.append(",".join(relay_commands))
+        relay_commands = []
+        for i, door in enumerate(doors):
+            wait_time = i * 500  # 500ms additional delay per door
+            relay_commands.append(f"{door}:{wait_time}:5000")
 
-        for group in relay_groups:
-            command = f"OPEN:{group}\n"
-            ser.write(command.encode())
-            print(f"Sent command: {command.strip()}")
-            ser.readline()  # Read response
-            time.sleep(DELAY_BETWEEN_GROUPS)  # Small delay after every 2 doors
+        # Send all commands in one message
+        command = f"OPEN:{','.join(relay_commands)}\n"
+        ser.write(command.encode())
+        print(f"Sent command: {command.strip()}")
 
+        ser.readline()  # Read response
         ser.close()
     except Exception as e:
         print(f"Error opening relays: {e}")
@@ -106,7 +115,6 @@ def main():
     entered_code = ""
     lcd.clear()
     lcd.backlight_enabled = False
-    code_entered = False
 
     try:
         while True:
@@ -120,12 +128,13 @@ def main():
                     elif entered_code:  # Second '*' means submit
                         lcd.clear()
                         lcd.write_string("Checking...")
-                        order_id = fetch_order_by_code(entered_code)
+                        order_id, action = fetch_order_by_code(entered_code)
 
                         if order_id:
                             lcd.clear()
-                            lcd.write_string(f"Order: {order_id}\nOpening...")
-                            send_order_update(order_id)  # Notify API
+                            lcd.write_string(f"Order: {order_id}\n{action.capitalize()}...")
+
+                            send_order_update(order_id, action)  # Notify API
                             doors = fetch_door_items(order_id)
                             open_relays(doors)  # Open the corresponding doors
                             time.sleep(3)
