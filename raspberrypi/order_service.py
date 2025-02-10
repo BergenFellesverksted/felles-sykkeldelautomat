@@ -2,13 +2,18 @@ import time
 import requests
 import sqlite3
 import serial
+import threading
+import cv2
+import numpy as np
+from pyzbar.pyzbar import decode
 from RPi import GPIO
 from RPLCD.i2c import CharLCD
-from constants import *
+from constantsTemplate import *
 
 # Constants
-SERIAL_PORT = "/dev/ttyUSB0"  # Adjust for the Arduino connection
-DELAY_BETWEEN_GROUPS = 0.5  # Delay (in seconds) after every 2 relays
+SERIAL_PORT = "/dev/ttyUSB0"
+DELAY_BETWEEN_GROUPS = 0.5
+SYNC_INTERVAL = 300  # 5 minutes
 
 # Keypad Configuration
 KEYPAD = [
@@ -17,52 +22,57 @@ KEYPAD = [
     [7, 8, 9, 'C'],
     ['*', 0, '#', 'D']
 ]
-ROW_PINS = [12, 16, 20, 21]  # GPIO row pins
-COL_PINS = [25, 8, 7, 1]     # GPIO column pins
+ROW_PINS = [12, 16, 20, 21]
+COL_PINS = [25, 8, 7, 1]
 
 # LCD Initialization
 lcd = CharLCD(i2c_expander='PCF8574', address=0x27, port=1, cols=16, rows=2, dotsize=8)
-lcd.backlight_enabled = False  # Keep LCD off initially
+lcd.backlight_enabled = False
 
 # GPIO Setup
 GPIO.setmode(GPIO.BCM)
 GPIO.setup(ROW_PINS, GPIO.OUT, initial=GPIO.LOW)
 GPIO.setup(COL_PINS, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
 
-def read_keypad():
-    """Scans the keypad and returns the pressed key."""
-    for row_num, row_pin in enumerate(ROW_PINS):
-        GPIO.output(row_pin, GPIO.HIGH)
-        for col_num, col_pin in enumerate(COL_PINS):
-            if GPIO.input(col_pin) == GPIO.HIGH:
-                GPIO.output(row_pin, GPIO.LOW)
-                return KEYPAD[row_num][col_num]
-        GPIO.output(row_pin, GPIO.LOW)
-    return None
-
-def fetch_order_by_code(code):
-    """
-    Checks if the entered code exists in the local database.
-    Returns (order_id, action) where action is 'pickup' or 'return'.
-    """
+def initialize_database():
+    """Creates the necessary tables if they don't exist."""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
 
-    # Check if code matches pickup_code
-    cursor.execute("SELECT order_id FROM orders WHERE pickup_code = ?", (code,))
-    result = cursor.fetchone()
-    if result:
-        conn.close()
-        return result[0], "pickup"  # Order found as a pickup
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS offline_actions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER,
+            action TEXT CHECK(action IN ('pickup', 'return')),
+            synced INTEGER DEFAULT 0
+        );
+    """)
 
-    # Check if code matches return_code
-    cursor.execute("SELECT order_id FROM orders WHERE return_code = ?", (code,))
+    conn.commit()
+    conn.close()
+
+def fetch_order_by_code(code):
+    """Fetches a valid order that hasn't been completed."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+
+    # Ensure pickup/return time is empty and the order isn't in offline_actions
+    cursor.execute("""
+        SELECT o.order_id, 
+               CASE 
+                   WHEN o.pickup_code = ? THEN 'pickup' 
+                   WHEN o.return_code = ? THEN 'return' 
+               END AS action
+        FROM orders o
+        LEFT JOIN offline_actions a ON o.order_id = a.order_id AND a.synced = 0
+        WHERE (o.pickup_code = ? OR o.return_code = ?) 
+        AND (o.pickup_time IS NULL OR o.return_time IS NULL) 
+        AND a.order_id IS NULL
+    """, (code, code, code, code))
+
     result = cursor.fetchone()
     conn.close()
-    if result:
-        return result[0], "return"  # Order found as a return
-
-    return None, None  # No valid order found
+    return result if result else (None, None)
 
 def fetch_door_items(order_id):
     """Fetches doors associated with items in an order."""
@@ -74,44 +84,91 @@ def fetch_door_items(order_id):
     return doors
 
 def send_order_update(order_id, action):
-    """Notifies the remote API whether the order was picked up or returned."""
+    """Notifies the API that an order was picked up or returned."""
     payload = {"api_key": API_KEY, "order_id": order_id, "action": action}
+
     try:
         response = requests.get(API_URL + "update_order_pickup.php", params=payload)
-        return response.status_code == 200
-    except requests.exceptions.RequestException as e:
-        print(f"Error sending order update: {e}")
-        return False
+        if response.status_code == 200:
+            print(f"Successfully updated {action} for order {order_id}")
+            return True
+    except requests.exceptions.RequestException:
+        print(f"Failed to sync {action} for order {order_id}. Storing for later.")
+    
+    # If failed, store it in offline_actions
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO offline_actions (order_id, action) VALUES (?, ?)", (order_id, action))
+    conn.commit()
+    conn.close()
+    return False
+
+def sync_offline_actions():
+    """Attempts to sync offline actions with the API."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, order_id, action FROM offline_actions WHERE synced = 0")
+    unsynced_actions = cursor.fetchall()
+
+    for action_id, order_id, action in unsynced_actions:
+        if send_order_update(order_id, action):
+            cursor.execute("UPDATE offline_actions SET synced = 1 WHERE id = ?", (action_id,))
+    
+    conn.commit()
+    conn.close()
 
 def open_relays(doors):
-    """
-    Sends relay commands to Arduino to open specific doors.
-    - All commands are sent at once.
-    - Each door has a 500ms additional wait time before activation.
-    - All doors stay open for 5000ms.
-    """
+    """Sends relay commands to Arduino to open specific doors in one batch."""
     if not doors:
         return
     try:
         ser = serial.Serial(SERIAL_PORT, 9600, timeout=1)
-        time.sleep(2)  # Wait for serial connection
+        time.sleep(2)
 
-        relay_commands = []
-        for i, door in enumerate(doors):
-            wait_time = i * 500  # 500ms additional delay per door
-            relay_commands.append(f"{door}:{wait_time}:5000")
-
-        # Send all commands in one message
+        relay_commands = [f"{door}:{i*500}:5000" for i, door in enumerate(doors)]
         command = f"OPEN:{','.join(relay_commands)}\n"
         ser.write(command.encode())
         print(f"Sent command: {command.strip()}")
 
-        ser.readline()  # Read response
+        ser.readline()
         ser.close()
     except Exception as e:
         print(f"Error opening relays: {e}")
 
+def scan_qr_codes():
+    """Continuously scans QR codes."""
+    cap = cv2.VideoCapture(0)
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            continue
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        decoded_objects = decode(gray)
+
+        for obj in decoded_objects:
+            code = obj.data.decode("utf-8")
+            print(f"QR Code Detected: {code}")
+
+            order_id, action = fetch_order_by_code(code)
+            if order_id:
+                print(f"Valid {action} for Order: {order_id}")
+                send_order_update(order_id, action)
+                doors = fetch_door_items(order_id)
+                open_relays(doors)
+                time.sleep(3)
+
+        time.sleep(0.5)
+
+    cap.release()
+
 def main():
+    """Main function handling both keypad and QR scanning."""
+    initialize_database()
+    threading.Thread(target=scan_qr_codes, daemon=True).start()
+    threading.Thread(target=lambda: time.sleep(SYNC_INTERVAL) or sync_offline_actions(), daemon=True).start()
+
     entered_code = ""
     lcd.clear()
     lcd.backlight_enabled = False
@@ -120,12 +177,12 @@ def main():
         while True:
             key = read_keypad()
             if key is not None:
-                if key == '*':  # Wake up the screen and start collecting input
+                if key == '*':
                     if not entered_code:
                         lcd.backlight_enabled = True
                         lcd.clear()
                         lcd.write_string("Enter Code:")
-                    elif entered_code:  # Second '*' means submit
+                    elif entered_code:
                         lcd.clear()
                         lcd.write_string("Checking...")
                         order_id, action = fetch_order_by_code(entered_code)
@@ -133,10 +190,9 @@ def main():
                         if order_id:
                             lcd.clear()
                             lcd.write_string(f"Order: {order_id}\n{action.capitalize()}...")
-
-                            send_order_update(order_id, action)  # Notify API
+                            send_order_update(order_id, action)
                             doors = fetch_door_items(order_id)
-                            open_relays(doors)  # Open the corresponding doors
+                            open_relays(doors)
                             time.sleep(3)
                             lcd.clear()
                             lcd.write_string("Done!")
@@ -144,11 +200,11 @@ def main():
                             lcd.clear()
                             lcd.write_string("Invalid Code!")
                             time.sleep(2)
-                        
-                        entered_code = ""  # Reset code
+
+                        entered_code = ""
                         lcd.clear()
                         lcd.backlight_enabled = False
-                elif key == '#':  # Reset input
+                elif key == '#':
                     entered_code = ""
                     lcd.clear()
                     lcd.write_string("Enter Code:")
@@ -157,7 +213,7 @@ def main():
                     lcd.clear()
                     lcd.write_string(f"Enter Code:\n{entered_code}")
 
-                time.sleep(0.3)  # Debounce
+                time.sleep(0.3)
 
     except KeyboardInterrupt:
         print("Shutting down")
