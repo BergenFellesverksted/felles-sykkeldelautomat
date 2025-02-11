@@ -9,7 +9,7 @@ SYNC_INTERVAL = 60  # Sync every 60 seconds
 def fetch_orders():
     """Fetch orders from the online API."""
     try:
-        response = requests.get(f"{API_URL}?api_key={API_KEY}")
+        response = requests.get(f"{API_URL + "orders.php"}?api_key={API_KEY}")
         response.raise_for_status()  # Raise an error for bad responses
         return response.json()
     except requests.exceptions.RequestException as e:

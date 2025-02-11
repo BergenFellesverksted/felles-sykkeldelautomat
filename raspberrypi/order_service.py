@@ -8,12 +8,12 @@ import numpy as np
 from pyzbar.pyzbar import decode
 from RPi import GPIO
 from RPLCD.i2c import CharLCD
-from constantsTemplate import *
+from constants import *
 
 # Constants
 SERIAL_PORT = "/dev/ttyUSB0"
 DELAY_BETWEEN_GROUPS = 0.5
-SYNC_INTERVAL = 300  # 5 minutes
+SYNC_INTERVAL = 300  # 5 minutes between trying to send offline codes
 
 # Keypad Configuration
 KEYPAD = [
@@ -51,6 +51,17 @@ def initialize_database():
     conn.commit()
     conn.close()
 
+def read_keypad():
+    """Scans the keypad and returns the pressed key."""
+    for row_num, row_pin in enumerate(ROW_PINS):
+        GPIO.output(row_pin, GPIO.HIGH)
+        for col_num, col_pin in enumerate(COL_PINS):
+            if GPIO.input(col_pin) == GPIO.HIGH:
+                GPIO.output(row_pin, GPIO.LOW)
+                return KEYPAD[row_num][col_num]
+        GPIO.output(row_pin, GPIO.LOW)
+    return None
+
 def fetch_order_by_code(code):
     """Fetches a valid order that hasn't been completed."""
     conn = sqlite3.connect(DB_FILE)
@@ -58,16 +69,23 @@ def fetch_order_by_code(code):
 
     # Ensure pickup/return time is empty and the order isn't in offline_actions
     cursor.execute("""
-        SELECT o.order_id, 
-               CASE 
-                   WHEN o.pickup_code = ? THEN 'pickup' 
-                   WHEN o.return_code = ? THEN 'return' 
-               END AS action
+        SELECT o.order_id,
+            CASE 
+                WHEN o.pickup_code = ? 
+                    AND (o.pickup_time IS NULL OR o.pickup_time = 'Not Picked Up')
+                    THEN 'pickup'
+                WHEN o.return_code = ? 
+                    AND (o.return_time IS NULL OR o.return_time = 'Not Returned')
+                    THEN 'return'
+            END AS action
         FROM orders o
-        LEFT JOIN offline_actions a ON o.order_id = a.order_id AND a.synced = 0
-        WHERE (o.pickup_code = ? OR o.return_code = ?) 
-        AND (o.pickup_time IS NULL OR o.return_time IS NULL) 
-        AND a.order_id IS NULL
+        LEFT JOIN offline_actions a 
+            ON o.order_id = a.order_id AND a.synced = 0
+        WHERE (
+                (o.pickup_code = ? AND (o.pickup_time IS NULL OR o.pickup_time = 'Not Picked Up'))
+            OR (o.return_code = ? AND (o.return_time IS NULL OR o.return_time = 'Not Returned'))
+            )
+        AND a.order_id IS NULL;
     """, (code, code, code, code))
 
     result = cursor.fetchone()
@@ -89,6 +107,8 @@ def send_order_update(order_id, action):
 
     try:
         response = requests.get(API_URL + "update_order_pickup.php", params=payload)
+        print(API_URL + "update_order_pickup.php")
+        print(payload)
         if response.status_code == 200:
             print(f"Successfully updated {action} for order {order_id}")
             return True
@@ -166,8 +186,8 @@ def scan_qr_codes():
 def main():
     """Main function handling both keypad and QR scanning."""
     initialize_database()
-    threading.Thread(target=scan_qr_codes, daemon=True).start()
-    threading.Thread(target=lambda: time.sleep(SYNC_INTERVAL) or sync_offline_actions(), daemon=True).start()
+    #threading.Thread(target=scan_qr_codes, daemon=True).start()
+    #threading.Thread(target=lambda: time.sleep(SYNC_INTERVAL) or sync_offline_actions(), daemon=True).start()
 
     entered_code = ""
     lcd.clear()
@@ -186,6 +206,8 @@ def main():
                         lcd.clear()
                         lcd.write_string("Checking...")
                         order_id, action = fetch_order_by_code(entered_code)
+
+                        print(order_id, action)
 
                         if order_id:
                             lcd.clear()
