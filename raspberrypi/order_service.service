@@ -1,0 +1,28 @@
+# Copy this file to /etc/systemd/system/order_service.service
+# sudo cp /home/pi/felles-sykkeldelautomat/raspberrypi/order_service.service /etc/systemd/system/order_service.service
+# sudo nano /etc/systemd/system/order_service.service
+# sudo systemctl daemon-reload
+# sudo systemctl enable order_service.service
+# sudo systemctl start order_service.service
+# sudo systemctl status order_service.service
+# sudo journalctl -u order_service.service -f
+
+
+[Unit]
+Description=Order Service
+After=network.target
+
+[Service]
+# Restart the service on failure.
+Restart=always
+RestartSec=5
+
+# Run as user pi, set the working directory.
+User=pi
+WorkingDirectory=/home/pi
+
+# Use the Python interpreter from the virtual environment.
+ExecStart=/home/pi/.venv/bin/python /home/pi/felles-sykkeldelautomat/raspberrypi/order_service.py
+
+[Install]
+WantedBy=multi-user.target
