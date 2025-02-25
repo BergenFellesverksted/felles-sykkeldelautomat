@@ -33,7 +33,6 @@ def open_relays(relays):
 if __name__ == "__main__":
     # Example: Relay 1 will open after 1000ms and stay open for 3000ms, Relay 2 will open after 2000ms and stay open for 5000ms
     relays_to_open = {
-        1: (1000, 3000),  # Relay 1 → Wait 1000ms → Open for 3000ms
-        2: (2000, 5000)   # Relay 2 → Wait 2000ms → Open for 5000ms
+        14: (1000, 10000),  # Relay 1 → Wait 1000ms → Open for 3000ms
     }
     open_relays(relays_to_open)

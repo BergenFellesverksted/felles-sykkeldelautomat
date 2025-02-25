@@ -7,6 +7,7 @@ import subprocess
 import os
 import cv2
 import numpy as np
+from datetime import datetime, timedelta
 from pyzbar.pyzbar import decode
 from RPi import GPIO
 from RPLCD.i2c import CharLCD
@@ -20,6 +21,7 @@ DELAY_BETWEEN_GROUPS = 0.5
 OFFLINE_SYNC_INTERVAL = 300   # 5 minutes for syncing offline actions
 ORDERS_SYNC_INTERVAL = 60     # Sync orders every 60 seconds
 LCD_TIMEOUT = 20 # Time before the LCD screen turns off without an input
+MINUTES_TO_ACCEPT_ORDER_AFTER_PICKUP = 15 # Time to accept opening the door after initial pickup time
 
 # Keypad Configuration
 KEYPAD = [
@@ -79,6 +81,7 @@ def initialize_database():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             order_id INTEGER,
             action TEXT CHECK(action IN ('pickup', 'return')),
+            action_time TEXT DEFAULT (datetime('now')),
             synced INTEGER DEFAULT 0
         );
     """)
@@ -160,15 +163,17 @@ def orders_sync_loop():
 # Offline Actions Sync (runs in its own thread)
 # ------------------------------------------------------------------------------
 def sync_offline_actions():
-    """Attempts to sync offline actions with the API."""
-    print(f"Checking offline pickups")
+    """Attempts to sync offline actions with the API, including action_time."""
+    print("Checking offline pickups")
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute("SELECT id, order_id, action FROM offline_actions WHERE synced = 0")
+    # Now select the action_time as well
+    cursor.execute("SELECT id, order_id, action, action_time FROM offline_actions WHERE synced = 0")
     unsynced_actions = cursor.fetchall()
 
-    for action_id, order_id, action in unsynced_actions:
-        if send_order_update(order_id, action):
+    for action_id, order_id, action, action_time in unsynced_actions:
+        # Pass action_time and set store_on_fail to False to prevent duplicate inserts
+        if send_order_update(order_id, action, action_time, store_on_fail=False):
             cursor.execute("UPDATE offline_actions SET synced = 1 WHERE id = ?", (action_id,))
     
     conn.commit()
@@ -195,31 +200,77 @@ def read_keypad():
     return None
 
 def fetch_order_by_code(code):
-    """Fetches a valid order that hasn't been completed."""
+    """
+    Fetches an order by its code.
+    
+    For a pickup code:
+      - If the order has not been picked up, it is valid.
+      - If the order was picked up, the code remains valid if within 15 minutes of the pickup time.
+      - Otherwise, returns (order_id, 'already_picked_up').
+    
+    For a return code:
+      - It is valid if the order has not yet been returned.
+      - Otherwise, returns (order_id, 'already_returned').
+      
+    Also, if there is a recent unsynced offline action (within 15 minutes), the order is blocked.
+    If no order is found at all, returns (None, None).
+    """
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
+
+    # Look for an order matching the given code.
     cursor.execute("""
-        SELECT o.order_id,
-            CASE 
-                WHEN o.pickup_code = ? 
-                     AND (o.pickup_time IS NULL OR o.pickup_time = 'Not Picked Up')
-                     THEN 'pickup'
-                WHEN o.return_code = ? 
-                     AND (o.return_time IS NULL OR o.return_time = 'Not Returned')
-                     THEN 'return'
-            END AS action
-        FROM orders o
-        LEFT JOIN offline_actions a 
-             ON o.order_id = a.order_id AND a.synced = 0
-        WHERE (
-                (o.pickup_code = ? AND (o.pickup_time IS NULL OR o.pickup_time = 'Not Picked Up'))
-             OR (o.return_code = ? AND (o.return_time IS NULL OR o.return_time = 'Not Returned'))
-              )
-          AND a.order_id IS NULL;
-    """, (code, code, code, code))
-    result = cursor.fetchone()
+        SELECT order_id, pickup_code, pickup_time, return_code, return_time
+        FROM orders
+        WHERE pickup_code = ? OR return_code = ?
+    """, (code, code))
+    order = cursor.fetchone()
+    if order is None:
+        conn.close()
+        return (None, None)
+    
+    order_id, pickup_code, pickup_time, return_code, return_time = order
+
+    # Check if there's a recent unsynced offline action for this order.
+    earliest_accepted_time = datetime.now() - timedelta(minutes=MINUTES_TO_ACCEPT_ORDER_AFTER_PICKUP)
+    cursor.execute("""
+        SELECT id FROM offline_actions
+        WHERE order_id = ? AND synced = 0 AND datetime(action_time) > ?
+    """, (order_id, earliest_accepted_time.isoformat(' ')))
+    offline_action = cursor.fetchone()
+    if offline_action:
+        # A recent unsynced offline action blocks further processing.
+        conn.close()
+        return (None, None)
+
+    action = None
+    if code == pickup_code:
+        # For a pickup code.
+        if pickup_time in (None, 'Not Picked Up'):
+            action = 'pickup'
+        else:
+            # Assume pickup_time is stored in ISO format.
+            try:
+                pickup_dt = datetime.fromisoformat(pickup_time)
+            except Exception:
+                conn.close()
+                return (None, None)
+            # Allow if within 15 minutes of the pickup time.
+            if datetime.now() <= pickup_dt + timedelta(minutes=MINUTES_TO_ACCEPT_ORDER_AFTER_PICKUP):
+                action = 'pickup'
+            else:
+                conn.close()
+                return (order_id, 'already_picked_up')
+    elif code == return_code:
+        # For a return code.
+        if return_time in (None, 'Not Returned'):
+            action = 'return'
+        else:
+            conn.close()
+            return (order_id, 'already_returned')
+    
     conn.close()
-    return result if result else (None, None)
+    return (order_id, action)
 
 def fetch_door_items(order_id):
     """Fetches doors associated with items in an order."""
@@ -230,23 +281,35 @@ def fetch_door_items(order_id):
     conn.close()
     return doors
 
-def send_order_update(order_id, action):
-    """Notifies the API that an order was picked up or returned."""
+def send_order_update(order_id, action, action_time=None, store_on_fail=True):
+    """Notifies the API that an order was picked up or returned, including action_time if provided.
+       When store_on_fail is True (default), an unsynced action is inserted on failure.
+       When syncing offline actions, set store_on_fail to False to avoid duplicates.
+    """
     payload = {"api_key": API_KEY, "order_id": order_id, "action": action}
+    if action_time:
+        payload["action_time"] = action_time
+
     try:
         response = requests.get(API_URL + "update_order_pickup.php", params=payload)
         if response.status_code == 200:
             print(f"Successfully updated {action} for order {order_id}")
             return True
     except requests.exceptions.RequestException:
-        print(f"Failed to sync {action} for order {order_id}. Storing for later.")
-    
-    # Store the unsynced action locally
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO offline_actions (order_id, action) VALUES (?, ?)", (order_id, action))
-    conn.commit()
-    conn.close()
+        print(f"Failed to sync {action} for order {order_id}.")
+
+    # Only insert into offline_actions if not already syncing an existing offline action.
+    if store_on_fail:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        if action_time:
+            cursor.execute("INSERT INTO offline_actions (order_id, action, action_time) VALUES (?, ?, ?)", 
+                           (order_id, action, action_time))
+        else:
+            cursor.execute("INSERT INTO offline_actions (order_id, action) VALUES (?, ?)", 
+                           (order_id, action))
+        conn.commit()
+        conn.close()
     return False
 
 def open_relays(doors):
@@ -349,7 +412,8 @@ def main():
                             lcd.write_string("Checking...")
                             order_id, action = fetch_order_by_code(entered_code)
                             print(f"Keypad code processed: {order_id}, {action}")
-                            if order_id:
+                            if order_id and action in ('pickup', 'return'):
+                                # Valid order: either pickup or return action.
                                 lcd.clear()
                                 lcd.write_string("Accepted order:")
                                 lcd.cursor_pos = (1, 0)
@@ -362,10 +426,20 @@ def main():
                                 time.sleep(10)
                                 send_order_update(order_id, action)
                                 lcd.clear()
+                            elif order_id and action == 'already_picked_up':
+                                lcd.clear()
+                                lcd.write_string("Order already picked up!")
+                                time.sleep(3)
+                            elif order_id and action == 'already_returned':
+                                lcd.clear()
+                                lcd.write_string("Order already returned!")
+                                time.sleep(3)
                             else:
+                                # When order_id is None or action is None, treat as an invalid code.
                                 lcd.clear()
                                 lcd.write_string("Invalid Code!")
                                 time.sleep(3)
+
                         # Reset code and screen after processing.
                         entered_code = ""
                         lcd.clear()

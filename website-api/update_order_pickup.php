@@ -43,7 +43,13 @@ if ($conn->connect_error) {
 }
 
 $order_id  = intval($_GET['order_id']);
-$timestamp = date("Y-m-d H:i:s");
+
+// Use provided action_time if available, otherwise use the current time.
+if (isset($_GET['action_time']) && !empty($_GET['action_time'])) {
+    $timestamp = $_GET['action_time'];
+} else {
+    $timestamp = date("Y-m-d H:i:s");
+}
 
 // SQL Query to insert or update the meta key (pickup or dropoff time)
 $insert_meta_sql = "
