@@ -26,7 +26,7 @@ The online system handles the assignment of pickup codes and manages order data.
   - Saves pickup confirmation dates sent from the Raspberry Pi.
   - Displays a login-protected table of orders and pickup times.
 
-> **Important:** Ensure that the "Staff member" name in WooCommerce exactly matches the item name. The system uses these names to associate orders with the correct door (via the `door` attribute).
+> **Important:** For Bookly items: Ensure that the "Staff member" name in WooCommerce exactly matches the item name in WooCommerce. The system uses these names to associate orders with the correct door (via the `door` attribute).
 
 ## Hardware Overview
 The core hardware components include:
