@@ -1,3 +1,6 @@
+// Flash this code to the Arduino Mega 2560 to control the relay boards
+// This code listens for serial commands to open relays for a specified duration
+
 void setup() {
   Serial.begin(9600);
 

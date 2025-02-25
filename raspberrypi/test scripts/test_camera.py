@@ -1,3 +1,7 @@
+# Never got this to work, but it was supposed to capture an image and decode any QR codes in the image.
+# The pyzbar were never able to read the QR codes, so the code was never used in the final product.
+# The code was intended to trigger the fetch_order_by_code() function in the order_service.py file.
+
 import subprocess
 import time
 import os
