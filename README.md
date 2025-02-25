@@ -1,19 +1,69 @@
 # FELLES Sykkeldelautomat
-### This is still very much a work in progress...
-## Introduction
-This repository contains files and instructions to create your own Sykkeldelautomat. Or do mainteinanse on the one at FELLES SykkelLab.
 
-The Sykkeldelautomat (bike part wending machine) is a IKEA Kallax shelf with doors for each opening, operated by 12V cabinet locks. These are operated by relay boards controlled by a Arduino Mega which again is controlled over Serial USB by a Raspberry Pi.
+### *Documentation is still Work in Progress*
 
-The items are ordered through the Woocommerce online store at BergenFellesverksted.no. If any of the items are in the Sykkeldelautomat category, a pickup code is automatically sent to the buyer.
+## Overview
+This repository contains the files and instructions needed to build your own **Sykkeldelautomat** (bike part vending machine) or to maintain the one at FELLES SykkelLab.
 
-The items are assigned a door in the system through the online Woocommerce, where you can add an `attribute` called `door = NN` to each item.
+The Sykkeldelautomat is constructed from an IKEA Kallax shelf, modified with doors equipped with 12V cabinet locks. These locks are controlled by relay boards, which are driven by an Arduino Mega. The Arduino, in turn, is connected to a Raspberry Pi via USB Serial.
 
-## Online setup
-The orders get assigned a pickup code through Woocommerce. This section assigns pickup codes to the items in the store category Sykkeldelautomat, and pickup and delivery codes to equipment booked through Bookly in the service SykkelLab. To add this functunality, add the functions from `website-api/functions.php` to your WordPress `functions.php`.
+Items are ordered through the [BergenFellesverksted.no](https://bergenfellesverksted.no) WooCommerce online store. When an item belongs to the Sykkeldelautomat category, a pickup code is automatically sent to the buyer. Additionally, each item is assigned a door using a WooCommerce `attribute` formatted as `door = NN`.
 
-One then need a API working on the website. The Raspberry Pi communicates with this API to get new orders. The code for the API is availiable in the `website-api` folder.
+## Online Setup
+The online system handles the assignment of pickup codes and manages order data. Here’s how it works:
 
-The API reads pickup codes added to the `wpia_postmeta` table and provides them to the Raspberry Pi. It then also saves pickup confirmed dates sent from the Raspberry Pi. Lastly it creates a table behind a login that shows the orders and the pickup times. 
+- **Pickup Code Assignment:**  
+  - Orders in the Sykkeldelautomat category are automatically assigned a pickup code.
+  - Equipment booked through Bookly in the SykkelLab service receives both pickup and delivery codes.
 
-Its important to make the name of the "Staff member" and the Item in the store the same, since the scripts use the names to match it and to find the `door` variable for the Bookly orders.
+- **WordPress Integration:**  
+  To enable these features, include the functions from `website-api/functions.php` in your WordPress `functions.php`.
+
+- **API Communication:**  
+  A custom API (code available in the `website-api` folder) facilitates communication between the Raspberry Pi and your website. It:
+  - Retrieves new orders.
+  - Reads pickup codes stored in the `wpia_postmeta` table.
+  - Saves pickup confirmation dates sent from the Raspberry Pi.
+  - Displays a login-protected table of orders and pickup times.
+
+> **Important:** Ensure that the "Staff member" name in WooCommerce exactly matches the item name. The system uses these names to associate orders with the correct door (via the `door` attribute).
+
+## Hardware Overview
+The core hardware components include:
+
+- **Raspberry Pi 3B+:**  
+  - Runs all services and communicates with the online API.
+  - Directly connects to an LCD module and a 4x4 keypad.
+  - Interfaces with the Arduino Mega via USB Serial.
+
+- **Arduino Mega 2560:**  
+  - Receives commands from the Raspberry Pi over serial.
+  - Controls the relay boards to activate the cabinet locks.
+
+Below is the system schematic:
+
+![System Schematic](resources/sykkeldelautomat_schem.png)
+
+## Relay Boards & Pinout
+The system features **two 16-channel relay boards** housed in the enclosure:
+
+- **Relay Board 1 (Bottom of Enclosure):**  
+  - **Door 1:** Arduino Mega pin 23  
+  - **Door 2:** Arduino Mega pin 25  
+  - **Door 3:** Arduino Mega pin 27  
+  - *(and so on…)*
+
+- **Relay Board 2 (Top of Enclosure):**  
+  - **Door 17:** Arduino Mega pin 22  
+  - **Door 18:** Arduino Mega pin 24  
+  - **Door 19:** Arduino Mega pin 26  
+  - **Door 20:** Arduino Mega pin 28  
+  - **Unused Channels:** Arduino Mega pins 30-52 (even numbers)
+
+Refer to the image below for a visual overview of the relay boards:
+
+![Relay Boards](resources/relayboards.jpg)
+
+And here’s an image of the finished installation:
+
+![Finished Installation](resources/finished.jpg)
