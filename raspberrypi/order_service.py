@@ -147,16 +147,19 @@ def update_local_database(orders):
     conn.commit()
     conn.close()
 
+def fetch_orders_now():
+    print("Fetching orders...")
+    orders = fetch_orders()
+    if orders:
+        update_local_database(orders)
+        print(f"Updated {len(orders)} orders.")
+    else:
+        print("No new orders found.")
+
 def orders_sync_loop():
     """Loop that periodically syncs orders from the API."""
     while True:
-        print("Fetching orders...")
-        orders = fetch_orders()
-        if orders:
-            update_local_database(orders)
-            print(f"Updated {len(orders)} orders.")
-        else:
-            print("No new orders found.")
+        fetch_orders_now()
         time.sleep(ORDERS_SYNC_INTERVAL)
 
 # ------------------------------------------------------------------------------
@@ -366,6 +369,36 @@ def scan_qr_codes():
         # Wait a few seconds before capturing the next image
         time.sleep(2)
 
+def process_code(code):
+    order_id, action = fetch_order_by_code(code)
+    print(f"Keypad code processed: {order_id}, {action}")
+    if order_id and action in ('pickup', 'return'):
+        lcd.clear()
+        lcd.write_string("Accepted order:")
+        lcd.cursor_pos = (1, 0)
+        lcd.write_string(f"{order_id}")
+        time.sleep(2)
+        doors = fetch_door_items(order_id)
+        lcd.clear()
+        lcd.write_string(f"Opening door {','.join(doors)}")
+        open_relays(doors)
+        time.sleep(10)
+        send_order_update(order_id, action)
+        lcd.clear()
+        return True
+    elif order_id and action == 'already_picked_up':
+        lcd.clear()
+        lcd.write_string("Order already picked up!")
+        time.sleep(3)
+        return True
+    elif order_id and action == 'already_returned':
+        lcd.clear()
+        lcd.write_string("Order already returned!")
+        time.sleep(3)
+        return True
+    else:
+        return False
+
 # ------------------------------------------------------------------------------
 # Main Function
 # ------------------------------------------------------------------------------
@@ -397,49 +430,29 @@ def main():
                         lcd.clear()
                         lcd.write_string("Enter Code:")
                         last_input_time = time.time()
-                    elif entered_code:
+                    else:
                         print(f"Entered code: {entered_code}")
-                        # Check if the entered code matches the special "open all doors" code.
                         if entered_code == OPEN_ALL_CODE:
                             lcd.clear()
                             lcd.write_string("Opening ALL doors")
-                            open_relays(ALL_DOORS)  # ALL_DOORS is a list of door identifiers from constants.py
+                            open_relays(ALL_DOORS)  # ALL_DOORS is a list of door identifiers
                             time.sleep(10)
                             lcd.clear()
                         else:
-                            # When '*' is pressed and a code has been entered, check the code.
+                            # First attempt: check the entered code.
                             lcd.clear()
                             lcd.write_string("Checking...")
-                            order_id, action = fetch_order_by_code(entered_code)
-                            print(f"Keypad code processed: {order_id}, {action}")
-                            if order_id and action in ('pickup', 'return'):
-                                # Valid order: either pickup or return action.
+                            if not process_code(entered_code):
+                                # If the first check fails, update the orders and try again.
                                 lcd.clear()
-                                lcd.write_string("Accepted order:")
-                                lcd.cursor_pos = (1, 0)
-                                lcd.write_string(f"{order_id}")
-                                time.sleep(2)
-                                doors = fetch_door_items(order_id)
-                                lcd.clear()
-                                lcd.write_string(f"Opening door {','.join(doors)}")
-                                open_relays(doors)
-                                time.sleep(10)
-                                send_order_update(order_id, action)
-                                lcd.clear()
-                            elif order_id and action == 'already_picked_up':
-                                lcd.clear()
-                                lcd.write_string("Order already picked up!")
-                                time.sleep(3)
-                            elif order_id and action == 'already_returned':
-                                lcd.clear()
-                                lcd.write_string("Order already returned!")
-                                time.sleep(3)
-                            else:
-                                # When order_id is None or action is None, treat as an invalid code.
-                                lcd.clear()
-                                lcd.write_string("Invalid Code!")
-                                time.sleep(3)
-
+                                lcd.write_string("Checking online")
+                                fetch_orders_now()  # Update the database
+                                
+                                if not process_code(entered_code):
+                                    lcd.clear()
+                                    lcd.write_string("Invalid Code!")
+                                    time.sleep(3)
+                        
                         # Reset code and screen after processing.
                         entered_code = ""
                         lcd.clear()
