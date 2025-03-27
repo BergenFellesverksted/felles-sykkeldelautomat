@@ -114,7 +114,7 @@ if (!(isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true)) {
     </style>
 </head>
 <body>
-
+<a href="door_view.php">Door view</a>
 <h2>Orders from Sykkeldelautomat</h2>
 <form method="post">
     <button type="submit" name="logout" class="logout-btn">Logout</button>
@@ -131,6 +131,10 @@ if (!(isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true)) {
             <th>Pickup Time</th>
             <th>Return Code</th>
             <th>Return Time</th>
+            <th>Opening Code</th>
+            <th>Opening Times</th>
+            <th>Start Time</th>
+            <th>End Time</th>
             <th>Items</th>
         </tr>
     </thead>
@@ -140,6 +144,14 @@ if (!(isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true)) {
 </table>
 
 <script>
+    // Utility function to format fields that might be arrays
+    function formatField(field) {
+        if (Array.isArray(field)) {
+            return field.join(", ");
+        }
+        return field;
+    }
+
     $(document).ready(function() {
         let apiKey = "<?php echo API_KEY; ?>"; // Replace with your actual API key
 
@@ -158,8 +170,12 @@ if (!(isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true)) {
                             <td>${order.order_total}</td>
                             <td>${order.pickup_code}</td>
                             <td>${order.pickup_time}</td>
-                            <td>${order.return_code}</td>
-                            <td>${order.return_time}</td>
+                            <td>${order.return_code ? order.return_code : "N/A"}</td>
+                            <td>${order.return_time ? order.return_time : "N/A"}</td>
+                            <td>${order.opening_code ? order.opening_code : "N/A"}</td>
+                            <td>${formatField(order.opening_time)}</td>
+                            <td>${formatField(order.start_time)}</td>
+                            <td>${formatField(order.end_time)}</td>
                             <td>${itemsHTML}</td>
                         </tr>
                     `;

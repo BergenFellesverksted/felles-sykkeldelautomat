@@ -33,7 +33,11 @@ SELECT DISTINCT
     billing_last.meta_value AS last_name,
     pickup.meta_value AS pickup_code,
     pickup_time.meta_value AS pickup_time,
-    return_time.meta_value AS return_time
+    return_time.meta_value AS return_time,
+    opening_code.meta_value AS opening_code,
+    opening_time.meta_value AS opening_time,
+    start_time.meta_value AS start_time,
+    end_time.meta_value AS end_time
 FROM wpia_posts
 LEFT JOIN wpia_woocommerce_order_items 
     ON wpia_posts.ID = wpia_woocommerce_order_items.order_id
@@ -63,13 +67,28 @@ LEFT JOIN wpia_postmeta AS pickup_time
 LEFT JOIN wpia_postmeta AS return_time 
     ON wpia_posts.ID = return_time.post_id 
     AND return_time.meta_key = '_return_time'
+LEFT JOIN wpia_postmeta AS opening_code 
+    ON wpia_posts.ID = opening_code.post_id 
+    AND opening_code.meta_key = '_opening_code'
+LEFT JOIN wpia_postmeta AS opening_time 
+    ON wpia_posts.ID = opening_time.post_id 
+    AND opening_time.meta_key = '_opening_time'
+LEFT JOIN wpia_postmeta AS start_time 
+    ON wpia_posts.ID = start_time.post_id 
+    AND start_time.meta_key = '_start_time'
+LEFT JOIN wpia_postmeta AS end_time 
+    ON wpia_posts.ID = end_time.post_id 
+    AND end_time.meta_key = '_end_time'
 LEFT JOIN wpia_postmeta AS product_attributes 
     ON wpia_woocommerce_order_itemmeta.meta_value = product_attributes.post_id 
     AND product_attributes.meta_key = '_product_attributes'
 WHERE wpia_posts.post_type = 'shop_order'
 AND wpia_posts.post_status IN ('wc-completed', 'wc-processing', 'wc-on-hold')
 AND wpia_woocommerce_order_itemmeta.meta_key = '_product_id'
-AND wpia_terms.slug = 'sykkeldelautomat'
+AND (
+    wpia_terms.slug = 'sykkeldelautomat'
+    OR wpia_term_taxonomy.parent = (SELECT term_id FROM wpia_terms WHERE slug = 'sykkeldelautomat')
+)
 ORDER BY wpia_posts.ID, wpia_woocommerce_order_items.order_item_id;
 ";
 
@@ -82,10 +101,19 @@ if ($result->num_rows > 0) {
     while ($row = $result->fetch_assoc()) {
         $order_id = $row['order_id'];
         $product_name = $row['product_name'];
-        $product_id = $row['product_id'];
         $customer_name = trim($row['first_name'] . ' ' . $row['last_name']);
         $pickup_code = $row['pickup_code'] ? $row['pickup_code'] : "Not Assigned";
         $pickup_time = $row['pickup_time'] ? $row['pickup_time'] : "Not Picked Up";
+        $opening_code = $row['opening_code'] ? $row['opening_code'] : "Not Assigned";
+        
+        // Process opening_time field (may be serialized array)
+        $opening_time = !empty($row['opening_time']) ? maybe_unserialize($row['opening_time']) : [];
+        
+        // Process start_time field
+        $start_time = !empty($row['start_time']) ? maybe_unserialize($row['start_time']) : [];
+        
+        // Process end_time field
+        $end_time = !empty($row['end_time']) ? maybe_unserialize($row['end_time']) : [];
 
         if (!isset($orders[$order_id])) {
             $orders[$order_id] = [
@@ -95,6 +123,10 @@ if ($result->num_rows > 0) {
                 "order_total" => $row["order_total"],
                 "pickup_code" => $pickup_code,
                 "pickup_time" => $pickup_time,
+                "opening_code" => $opening_code,
+                "opening_time" => $opening_time,
+                "start_time" => $start_time,
+                "end_time" => $end_time,
                 "items" => []
             ];
         }
@@ -132,7 +164,11 @@ SELECT
     pm1.meta_value AS pickup_code,        
     pm2.meta_value AS return_code,        
     pm3.meta_value AS pickup_time,   
-    pm4.meta_value AS return_time         
+    pm4.meta_value AS return_time,
+    pm5.meta_value AS opening_code,
+    pm6.meta_value AS opening_time,
+    pm7.meta_value AS start_time,
+    pm8.meta_value AS end_time
 FROM wpia_woocommerce_order_items oi
 JOIN wpia_posts o ON oi.order_id = o.ID
 JOIN wpia_woocommerce_order_itemmeta oi_meta 
@@ -174,6 +210,18 @@ LEFT JOIN wpia_postmeta pm3
 LEFT JOIN wpia_postmeta pm4 
     ON oi.order_id = pm4.post_id 
     AND pm4.meta_key = '_return_time'
+LEFT JOIN wpia_postmeta pm5 
+    ON oi.order_id = pm5.post_id 
+    AND pm5.meta_key = '_opening_code'
+LEFT JOIN wpia_postmeta pm6 
+    ON oi.order_id = pm6.post_id 
+    AND pm6.meta_key = '_opening_time'
+LEFT JOIN wpia_postmeta pm7 
+    ON oi.order_id = pm7.post_id 
+    AND pm7.meta_key = '_start_time'
+LEFT JOIN wpia_postmeta pm8 
+    ON oi.order_id = pm8.post_id 
+    AND pm8.meta_key = '_end_time'
 LEFT JOIN wpia_postmeta wp_total 
     ON o.ID = wp_total.post_id 
     AND wp_total.meta_key = '_order_total'
@@ -191,11 +239,19 @@ if ($bookly_result->num_rows > 0) {
         $order_id = $row['order_id'];
         $product_name = $row['product_name']; // Staff name is used as product name
         $customer_name = trim($row['first_name'] . ' ' . $row['last_name']); 
-        $order_total = $row['order_total'] ? $row['order_total'] : "Unknown"; // Ensure order_total is included
+        $order_total = $row['order_total'] ? $row['order_total'] : "Unknown";
         $pickup_code = $row['pickup_code'] ? $row['pickup_code'] : "Not Assigned";
         $return_code = $row['return_code'] ? $row['return_code'] : "Not Assigned";
         $pickup_time = $row['pickup_time'] ? $row['pickup_time'] : "Not Picked Up";
         $return_time = $row['return_time'] ? $row['return_time'] : "Not Returned";
+        $opening_code = $row['opening_code'] ? $row['opening_code'] : "Not Assigned";
+        
+        // Process opening_time field
+        $opening_time = !empty($row['opening_time']) ? maybe_unserialize($row['opening_time']) : [];
+        // Process start_time field
+        $start_time = !empty($row['start_time']) ? maybe_unserialize($row['start_time']) : [];
+        // Process end_time field
+        $end_time = !empty($row['end_time']) ? maybe_unserialize($row['end_time']) : [];
 
         // Extract "Door" attribute from serialized product attributes
         $door_value = "Unknown";
@@ -211,11 +267,15 @@ if ($bookly_result->num_rows > 0) {
                 "order_id" => $order_id,
                 "customer_name" => $customer_name,
                 "order_date" => $row["post_date"],
-                "order_total" => $order_total, // Include order total
+                "order_total" => $order_total,
                 "pickup_code" => $pickup_code,
                 "return_code" => $return_code,
                 "pickup_time" => $pickup_time,
                 "return_time" => $return_time,
+                "opening_code" => $opening_code,
+                "opening_time" => $opening_time,
+                "start_time" => $start_time,
+                "end_time" => $end_time,
                 "items" => []
             ];
         }
