@@ -81,7 +81,6 @@ if (isset($_POST['logout'])) {
 }
 
 // Determine link mode: Admin vs Public
-// e.g. ?mode=public or ?mode=admin
 $mode = isset($_GET['mode']) ? $_GET['mode'] : 'admin';
 $modeLabel = ($mode === 'public') ? 'Public Links' : 'Admin Links';
 
@@ -107,7 +106,6 @@ function is_serialized($data) {
  | 3) Query Explanation
  |----------------------------------------------------------------------------------
  | This query looks up products in parent cat ID=216 or children (tt.term_id=216 or tt.parent=216).
- | Joins an additional subselect "child_t" for a subcategory that has parent=216.
  | The assumption: 216 is the term_id of 'sykkeldelautomat'.
 */
 $sql = "
@@ -115,43 +113,31 @@ SELECT
   p.ID AS product_id,
   p.post_name AS product_slug,
   p.post_title,
-
-  -- product attributes, stock, and price:
   product_attrs.meta_value AS product_attributes,
   stock.meta_value AS stock_qty,
   price.meta_value AS item_price,
-
-  -- Parent cat info
   parent_t.term_id AS parent_term_id,
   parent_t.slug    AS parent_cat_slug,
   parent_t.name    AS parent_cat_name,
-
-  -- Child cat info if any
   child_t.term_id AS child_term_id,
   child_t.slug    AS sub_cat_slug,
   child_t.name    AS sub_cat_name
-
 FROM wpia_posts p
-
 JOIN wpia_term_relationships tr 
   ON p.ID = tr.object_id
 JOIN wpia_term_taxonomy tt 
   ON tr.term_taxonomy_id = tt.term_taxonomy_id
 JOIN wpia_terms parent_t
   ON tt.term_id = parent_t.term_id
-
 LEFT JOIN wpia_postmeta product_attrs
   ON p.ID = product_attrs.post_id
   AND product_attrs.meta_key = '_product_attributes'
-
 LEFT JOIN wpia_postmeta stock
   ON p.ID = stock.post_id
   AND stock.meta_key = '_stock'
-
 LEFT JOIN wpia_postmeta price
   ON p.ID = price.post_id
   AND price.meta_key = '_price'
-
 LEFT JOIN (
   SELECT
     tt2.term_taxonomy_id,
@@ -168,7 +154,6 @@ LEFT JOIN (
     AND tt2.parent = 216         -- parent cat ID for 'sykkeldelautomat'
 ) AS child_t
   ON child_t.object_id = p.ID
-
 WHERE p.post_type = 'product'
   AND p.post_status = 'publish'
   AND tt.taxonomy = 'product_cat'
@@ -176,7 +161,6 @@ WHERE p.post_type = 'product'
       tt.term_id = 216
    OR tt.parent  = 216
   )
-
 GROUP BY p.ID
 ORDER BY p.post_title
 ";
@@ -202,12 +186,9 @@ if ($result && $result->num_rows > 0) {
         $attrSerialized= $row['product_attributes'];
         $stockQty      = $row['stock_qty'];
         $itemPrice     = $row['item_price'];
-        
         // The sub-category (group) under sykkeldelautomat if it exists
         $subCatSlug    = $row['sub_cat_slug'] ?: '';
         $subCatName    = $row['sub_cat_name'];  // might be NULL if no sub-cat
-
-        // Attempt to read "door" from product attributes
         $doorValue = null;
         if (!empty($attrSerialized)) {
             $attributes = maybe_unserialize($attrSerialized);
@@ -215,8 +196,6 @@ if ($result && $result->num_rows > 0) {
                 $doorValue = trim($attributes['door']['value']);
             }
         }
-
-        // If door is an integer 1..20, store item
         if ($doorValue && ctype_digit($doorValue)) {
             $doorInt = (int)$doorValue;
             if ($doorInt >= 1 && $doorInt <= 20) {
@@ -226,7 +205,7 @@ if ($result && $result->num_rows > 0) {
                     'name'        => $productName,
                     'stock'       => $stockQty,
                     'price'       => $itemPrice,
-                    'sub_cat_slug'=> strtolower($subCatSlug), // ensure consistent slugs
+                    'sub_cat_slug'=> strtolower($subCatSlug),
                     'sub_cat_name'=> $subCatName
                 ];
             }
@@ -241,7 +220,6 @@ $conn->close();
  |----------------------------------------------------------------------------------
 */
 $colorMap = [
-    // slug => color
     'diy'                   => '#ffdada',
     'drivverk'              => '#daffda',
     'slanger'               => '#dadaff',
@@ -266,11 +244,8 @@ $defaultColor = '#eaeaea';
             padding: 10px 15px; cursor: pointer; float: right; border-radius: 4px;
         }
         .logout-btn:hover { background-color: darkred; }
-
         .admin-link { display: inline-block; margin-right: 10px; }
         h2 { margin-top: 0; }
-
-        /* Grid layout for the doors (4 columns × 5 rows) */
         .grid-container {
             display: grid; 
             grid-template-columns: repeat(4, 1fr);
@@ -284,9 +259,15 @@ $defaultColor = '#eaeaea';
             padding: 15px; 
             box-shadow: 0 0 5px rgba(0,0,0,0.1);
         }
-        .grid-item h3 {
-            margin-top: 0; 
+        /* New header row for each door */
+        .grid-item-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
             margin-bottom: 10px;
+        }
+        .grid-item-header h3 {
+            margin: 0;
         }
         .item-list {
             margin: 0; 
@@ -312,8 +293,6 @@ $defaultColor = '#eaeaea';
             color: #666; 
             margin-left: 6px;
         }
-
-        /* Legend styling */
         .color-legend {
             display: flex; 
             flex-wrap: wrap; 
@@ -332,7 +311,20 @@ $defaultColor = '#eaeaea';
             border-radius: 3px;
             border: 1px solid #ccc;
         }
+        /* Button styling for opening a door */
+        .open-door-btn {
+            padding: 8px 12px;
+            background-color: #28a745;
+            border: none;
+            border-radius: 4px;
+            color: #fff;
+            cursor: pointer;
+        }
+        .open-door-btn:hover {
+            background-color: #218838;
+        }
     </style>
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
 </head>
 <body>
 
@@ -348,7 +340,7 @@ $defaultColor = '#eaeaea';
     <a class="admin-link" href="?mode=public">Public</a>
 </p>
 
-<!-- Manage All Items link (parent cat) -->
+<!-- Manage All Items link -->
 <p>
     <a class="admin-link" href="https://www.bergenfellesverksted.no/wp-admin/edit.php?s&post_status=all&post_type=product&product_cat=sykkeldelautomat" 
        target="_blank">
@@ -356,7 +348,7 @@ $defaultColor = '#eaeaea';
     </a>
 </p>
 
-<!-- Add a Color Legend at the top -->
+<!-- Color Legend -->
 <div class="color-legend">
     <strong>Color Legend:</strong>
     <?php foreach ($colorMap as $slug => $color): ?>
@@ -365,7 +357,6 @@ $defaultColor = '#eaeaea';
             <span><?php echo htmlspecialchars($slug); ?></span>
         </div>
     <?php endforeach; ?>
-    <!-- You could also show default color if you want -->
     <div class="legend-item">
         <div class="legend-color-box" style="background-color: <?php echo $defaultColor; ?>;"></div>
         <span>Other / Not Mapped</span>
@@ -377,7 +368,10 @@ $defaultColor = '#eaeaea';
 <div class="grid-container">
     <?php for ($doorNumber = 1; $doorNumber <= 20; $doorNumber++): ?>
         <div class="grid-item">
-            <h3>Door <?php echo $doorNumber; ?></h3>
+            <div class="grid-item-header">
+                <h3>Door <?php echo $doorNumber; ?></h3>
+                <button class="open-door-btn" data-door="<?php echo $doorNumber; ?>">Open Door</button>
+            </div>
             <?php if (!empty($doors[$doorNumber])): ?>
                 <ul class="item-list">
                     <?php foreach ($doors[$doorNumber] as $item):
@@ -386,22 +380,15 @@ $defaultColor = '#eaeaea';
                         $productName = htmlspecialchars($item['name']);
                         $stock       = $item['stock'];
                         $price       = $item['price'];
-                        $subCatSlug  = $item['sub_cat_slug']; // already lowercased
-
-                        // Stock display
+                        $subCatSlug  = $item['sub_cat_slug'];
                         $stockText = ($stock !== null && $stock !== '')
                             ? 'Stock: ' . htmlspecialchars($stock)
                             : 'Stock: N/A';
-                        
-                        // Price display
                         $priceText = ($price !== null && $price !== '')
                             ? htmlspecialchars($price) . ' kr'
                             : 'N/A kr';
-
-                        // Determine background color
                         $bgColor = isset($colorMap[$subCatSlug]) ? $colorMap[$subCatSlug] : $defaultColor;
                         
-                        // Determine link
                         if ($mode === 'public') {
                             $finalLink = "https://www.bergenfellesverksted.no/produkt/" . $productSlug;
                         } else {
@@ -422,6 +409,25 @@ $defaultColor = '#eaeaea';
         </div>
     <?php endfor; ?>
 </div>
+
+<script>
+$(document).ready(function(){
+    $(".open-door-btn").click(function(){
+        var doorNumber = $(this).data("door");
+        $.ajax({
+            url: "open_door.php",
+            type: "POST",
+            data: { door: doorNumber },
+            success: function(response) {
+                alert("Door " + doorNumber + " opened successfully!");
+            },
+            error: function(xhr, status, error) {
+                alert("Error opening door " + doorNumber + ": " + error);
+            }
+        });
+    });
+});
+</script>
 
 </body>
 </html>

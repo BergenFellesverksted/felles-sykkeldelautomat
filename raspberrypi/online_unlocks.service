@@ -1,0 +1,28 @@
+# Copy this file to /etc/systemd/system/online_unlocks.service
+# sudo cp /home/pi/felles-sykkeldelautomat/raspberrypi/online_unlocks.service /etc/systemd/system/online_unlocks.service
+# sudo nano /etc/systemd/system/online_unlocks.service
+# sudo systemctl daemon-reload
+# sudo systemctl enable online_unlocks.service
+# sudo systemctl start online_unlocks.service
+# sudo systemctl status online_unlocks.service
+# sudo journalctl -u online_unlocks.service -f
+
+
+[Unit]
+Description=Order Service
+After=network.target
+
+[Service]
+# Restart the service on failure.
+Restart=always
+RestartSec=5
+
+# Run as user pi, set the working directory.
+User=pi
+WorkingDirectory=/home/pi
+
+# Use the Python interpreter from the virtual environment.
+ExecStart=/home/pi/.venv/bin/python /home/pi/felles-sykkeldelautomat/raspberrypi/online_unlocks.py
+
+[Install]
+WantedBy=multi-user.target
