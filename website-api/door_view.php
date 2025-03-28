@@ -151,7 +151,7 @@ LEFT JOIN (
   JOIN wpia_terms t2
     ON tt2.term_id = t2.term_id
   WHERE tt2.taxonomy = 'product_cat'
-    AND tt2.parent = 216         -- parent cat ID for 'sykkeldelautomat'
+    AND tt2.parent = 216
 ) AS child_t
   ON child_t.object_id = p.ID
 WHERE p.post_type = 'product'
@@ -186,9 +186,8 @@ if ($result && $result->num_rows > 0) {
         $attrSerialized= $row['product_attributes'];
         $stockQty      = $row['stock_qty'];
         $itemPrice     = $row['item_price'];
-        // The sub-category (group) under sykkeldelautomat if it exists
         $subCatSlug    = $row['sub_cat_slug'] ?: '';
-        $subCatName    = $row['sub_cat_name'];  // might be NULL if no sub-cat
+        $subCatName    = $row['sub_cat_name'];
         $doorValue = null;
         if (!empty($attrSerialized)) {
             $attributes = maybe_unserialize($attrSerialized);
@@ -333,6 +332,8 @@ $defaultColor = '#eaeaea';
     <button type="submit" name="logout" class="logout-btn">Logout</button>
 </form>
 
+<p><a href="./">Show Order List</a></p>
+
 <!-- Mode Toggle Links -->
 <p>
     <strong>Link Mode:</strong>
@@ -414,17 +415,23 @@ $defaultColor = '#eaeaea';
 $(document).ready(function(){
     $(".open-door-btn").click(function(){
         var doorNumber = $(this).data("door");
-        $.ajax({
-            url: "open_door.php",
-            type: "POST",
-            data: { door: doorNumber },
-            success: function(response) {
-                alert("Door " + doorNumber + " opened successfully!");
-            },
-            error: function(xhr, status, error) {
-                alert("Error opening door " + doorNumber + ": " + error);
+        var confirmation = confirm("Are you sure you want to open door " + doorNumber + " right now?");
+        if (confirmation) {
+            var confirmation2 = confirm("Really?");
+            if (confirmation2) {
+                $.ajax({
+                    url: "open_door.php",
+                    type: "POST",
+                    data: { door: doorNumber },
+                    success: function(response) {
+                        alert("Request to open door " + doorNumber + " sent successfully!");
+                    },
+                    error: function(xhr, status, error) {
+                        alert("Error opening door " + doorNumber + ": " + error);
+                    }
+                });
             }
-        });
+        }
     });
 });
 </script>

@@ -114,7 +114,7 @@ if (!(isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true)) {
     </style>
 </head>
 <body>
-<a href="door_view.php">Door view</a>
+<a href="door_view.php">Show Door View</a>
 <h2>Orders from Sykkeldelautomat</h2>
 <form method="post">
     <button type="submit" name="logout" class="logout-btn">Logout</button>
