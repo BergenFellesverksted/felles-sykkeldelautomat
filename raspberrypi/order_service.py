@@ -16,7 +16,6 @@ from constants import *  # Make sure DB_FILE, API_URL, API_KEY, OPEN_ALL_CODE, A
 # ------------------------------------------------------------------------------
 # Constants
 # ------------------------------------------------------------------------------
-SERIAL_PORT = "/dev/ttyUSB0"
 DELAY_BETWEEN_GROUPS = 0.5
 OFFLINE_SYNC_INTERVAL = 300   # 5 minutes for syncing offline actions
 ORDERS_SYNC_INTERVAL = 60     # Sync orders every 60 seconds
