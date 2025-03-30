@@ -1,4 +1,8 @@
 <?php
+// These are functions to be placed in the Wordpress theme functions.php. They are addon features for the Wordpress, 
+// and are used for various parts of the Sykkeldelautomat. In BFVs case this file is currently availible at 
+// https://www.bergenfellesverksted.no/wp-admin/theme-editor.php?file=functions.php&theme=twentyseventeen
+
 
 // Functions to generate pickup codes for the sykkeldelautomat
 function generate_unique_pickup_code() {
@@ -20,11 +24,14 @@ function generate_unique_pickup_code() {
     return $final_code;
 }
 
+// Get existing codes to avoid creating duplicates
 function get_existing_codes() {
     global $wpdb;
-    return $wpdb->get_col("SELECT meta_value FROM wpia_postmeta WHERE meta_key IN ('_pickup_code', '_return_code')");
+    return $wpdb->get_col("SELECT meta_value FROM wpia_postmeta WHERE meta_key IN ('_pickup_code', '_return_code', '_opening_code')");
 }
 
+// Assign pickup code to orders containing items from the sykkeldelautomat. This only covers Woocommerce orders, not Bookly.
+// It checks if the order contains items from the sykkeldelautomat category and assigns a pickup code if it does.
 function assign_pickup_code($order_id) {
     $order = wc_get_order($order_id);
     $items = $order->get_items();
@@ -49,8 +56,8 @@ function assign_pickup_code($order_id) {
 
         $email = $order->get_billing_email();
         $subject = "Pickup code for order $order_id";
-		$qrUrl = "https://quickchart.io/qr?text=" . urlencode($pickup_code) ;
-
+        
+		// $qrUrl = "https://quickchart.io/qr?text=" . urlencode($pickup_code) ;
 		// Now include this URL in your email HTML:
 		//$message = "
 		//	<p>Your order contains items from the Sykkeldelautomat.</p>
@@ -59,16 +66,21 @@ function assign_pickup_code($order_id) {
 		//	<p><img src='$qrUrl' alt='QR Code' /></p>
 		//";
 		$message = "
-			<p>Your order contains items from the Sykkeldelautomat.</p>
-			<p>Your pickup code is: <strong>$pickup_code</strong></p>
-			<p>Start and end your code with * on the keypad at the pickup station.</p>
-		";
+            <p>Your order includes items from the Sykkeldelautomat.</p>
+            <p>Your pickup code is: <strong>$pickup_code</strong></p>
+            <p>Enter your code on the pickup station keypad, starting and ending with an asterisk (*), to unlock the doors containing your items.</p>
+            <p>Please note that each door may contain multiple different items. Make sure to take only the items you ordered.</p>
+            <p>Your pickup code is valid for a single use. However, once activated, it will remain valid for an additional 15 minutes in case you forgot something or took the wrong item.</p>
+        ";
 
         wp_mail($email, $subject, $message);
     }
 }
 add_action('woocommerce_payment_complete', 'assign_pickup_code', 10, 1);
 
+// Assign pickup code to Bookly orders. This is a custom function for the Bookly plugin. 
+// It basically does the same as the function above, but for Bookly orders.
+// It also includes a check to see if the order is for the service "SykkelLab" and only then assigns a pickup code.
 function assign_opening_code_bookly($order_id) {
     global $wpdb;
     
@@ -153,11 +165,13 @@ function assign_opening_code_bookly($order_id) {
                      FROM wpia_bookly_appointments 
                      WHERE service_id = %d 
                        AND staff_id = %d 
-                       AND start_date BETWEEN %s AND %s 
+                       AND (start_date BETWEEN %s AND %s OR end_date BETWEEN %s AND %s)
                        AND id != %d",
                     $booking->service_id,
                     $booking->staff_id,
                     $current_time_mysql,
+                    $appointment->start_date,
+					$current_time_mysql,
                     $appointment->start_date,
                     $appointment->id
                 )
@@ -172,17 +186,13 @@ function assign_opening_code_bookly($order_id) {
                     array('%s'),
                     array('%d')
                 );
-                $used_start_timestamp = $current_time_mysql;
+                $used_start_timestamp = strtotime($current_time_mysql);
             } else {
                 // Conflict found: abort the update and log a message.
                 error_log("Conflict: Found " . count($conflicting_appointments) . " conflicting appointment(s) for order $order_id. Aborting start_date update.");
                 // $used_start_timestamp remains as the original start time.
             }
         }
-    } else {
-        // If no appointment is found, set defaults.
-        $used_start_timestamp = current_time('mysql');
-        $end_timestamp = time();
     }
     
     // Generate a unique opening code
@@ -190,40 +200,87 @@ function assign_opening_code_bookly($order_id) {
     update_post_meta($order_id, '_opening_code', $opening_code);
     
     // Format the timestamps to "d.m.Y H:i"
-    $formatted_start = date("d.m.Y H:i", strtotime($used_start_timestamp));
+    $formatted_start = date("d.m.Y H:i", $used_start_timestamp);
     $formatted_end   = date("d.m.Y H:i", $end_timestamp);
-    
-    // Also include validity timestamps 
+	
+	// Also include validity timestamps 
     update_post_meta($order_id, '_start_time', date("Y-m-d H:i:s", $used_start_timestamp));
     update_post_meta($order_id, '_end_time', date("Y-m-d H:i:s", $end_timestamp));
     
     // Prepare and send the email with the opening code
     $email   = $order->get_billing_email();
     $subject = "Opening code for order $order_id";
-    $message = "<p>Your booking for SykkelLab is confirmed.</p>" .
-               "<p>Booking is valid from " . $formatted_start . " to " . $formatted_end . "</p>" .
-               "<p>Your opening code is: <strong>*$opening_code*</strong></p>" .
-               "<p>Start and end your code with * on the keypad at the pickup station.</p>" .
-               "<p>This code will work within the entire booking window, and you can open the cabinet door as many times as you want.</p>";
+    $message = "
+        <p>Your booking for SykkelLab is confirmed.</p>
+        <p>Your booking is valid from <strong>$formatted_start</strong> to <strong>$formatted_end</strong>.</p>
+        <p>Your access code is: <strong>*$opening_code*</strong></p>
+        <p>Enter your code on the keypad at the pickup station, starting and ending with an asterisk (*).</p>
+        <p>This code is valid for the entire booking period, and you can open the cabinet door as many times as needed during this time.</p>
+        <p>Your access will expire automatically after your booking period ends, so please ensure you finish using the cabinet by the end time shown above. If you require additional time, consider extending your booking and obtaining a new access code.</p>
+    ";
     
     wp_mail($email, $subject, $message);
 }
 add_action('woocommerce_payment_complete', 'assign_opening_code_bookly', 10, 1);
 
 
-// Trigger the assign_pickup_code_bookly() function based on an order_id passed via GET
-function trigger_assign_pickup_code_bookly_from_get() {
-    // For security, you might want to check if the current user is logged in
-    // or has a specific capability. For example:
-    // if ( ! current_user_can('manage_options') ) { return; }
+// Trigger the assign_pickup_code_bookly function from a GET request.
+// This is useful for testing or manual triggering of the function without going through the WooCommerce payment process.
+// Uncomment the following lines to enable this feature. Be cautious with security implications.
+// function trigger_assign_pickup_code_bookly_from_get() {
+//     // For security, you might want to check if the current user is logged in
+//     // or has a specific capability. For example:
+//     // if ( ! current_user_can('manage_options') ) { return; }
     
-    if ( isset($_GET['order_id']) && !empty($_GET['order_id']) ) {
-        $order_id = intval($_GET['order_id']);
-        // Optionally log that we're triggering the function
-        error_log("Triggering assign_pickup_code_bookly() for Order ID: $order_id via GET");
-        assign_pickup_code_bookly($order_id);
-    }
+//     if ( isset($_GET['order_id']) && !empty($_GET['order_id']) ) {
+//         $order_id = intval($_GET['order_id']);
+//         // Optionally log that we're triggering the function
+//         error_log("Triggering assign_pickup_code_bookly() for Order ID: $order_id via GET");
+//         assign_pickup_code_bookly($order_id);
+//     }
+// }
+// add_action('init', 'trigger_assign_pickup_code_bookly_from_get');
+
+
+// Create a shortcode used in woocommerse item descriptions to show the booking status of a Bookly item the same day.
+function booking_status_shortcode($atts) {
+    $atts = shortcode_atts([
+        'staff_id' => '0',
+        'service_id' => '0'
+    ], $atts);
+
+    ob_start();
+    ?>
+
+    <div id="booking-status-<?php echo esc_attr($atts['staff_id'] . '-' . $atts['service_id']); ?>" style="margin-bottom:20px;">
+        Checking availability...
+    </div>
+
+    <script>
+    document.addEventListener('DOMContentLoaded', function () {
+        const statusDiv = document.getElementById('booking-status-<?php echo esc_js($atts['staff_id'] . '-' . $atts['service_id']); ?>');
+
+        fetch('/api_booking_status.php?staff_id=<?php echo esc_js($atts['staff_id']); ?>&service_id=<?php echo esc_js($atts['service_id']); ?>')
+            .then(res => res.json())
+            .then(data => {
+                if (data.status === 'booked') {
+                    statusDiv.innerHTML = 'Denne varen er: <strong style="color:red;">Opptatt i dag</strong>';
+                } else if (data.status === 'available') {
+                    statusDiv.innerHTML = 'Denne varen er: <strong style="color:green;">Tilgjengelig i dag</strong>';
+                } else {
+                    statusDiv.innerHTML = 'Status unavailable';
+                }
+            })
+            .catch(err => {
+                statusDiv.innerHTML = 'Error checking status';
+                console.error(err);
+            });
+    });
+    </script>
+
+    <?php
+    return ob_get_clean();
 }
-add_action('init', 'trigger_assign_pickup_code_bookly_from_get');
+add_shortcode('booking_status', 'booking_status_shortcode');
 
 ?>
