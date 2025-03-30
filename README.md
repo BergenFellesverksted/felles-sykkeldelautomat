@@ -435,3 +435,24 @@ python /home/pi/felles-sykkeldelautomat/raspberrypi/test\ scripts/test_camera.py
 By following this guide, you'll have a fully functional **Sykkeldelautomat** that integrates physical hardware with a WooCommerce store, enabling automated item pickups and remote door control.
 
 **Enjoy your new automated pickup system!**
+
+# 3D files and custom PCB
+3D files (.step) and a custom PCB design is available in the `resources/3d files` and `resources/kicad_pcb` folders.
+
+## Additional Images
+Below are additional images showcasing various components of the system:
+
+- **Custom PCB:**  
+  ![Custom PCB](resources/custom_pcb.jpg)
+
+- **LCD Display:**  
+  ![LCD Display](resources/lcd.jpg)
+
+- **elektronikk boks.step:**  
+  ![Electronics Box](resources/elektronikk_boks.jpg)
+
+- **lock_pcb_box.step:**  
+  ![Lock PCB Box](resources/lock_pcb_box.jpg)
+
+- **utsalg skapdorer.step:**  
+  ![Vending Machine Doors](resources/utsalg_skapdorer.jpg)
