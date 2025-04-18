@@ -43,8 +43,10 @@ function assign_pickup_code($order_id) {
 
         if ($terms) {
             foreach ($terms as $term) {
-                if ($term->slug == 'sykkeldelautomat') {
+                // Check if term is sykkeldelautomat or a subcategory of it
+                if ($term->slug === 'sykkeldelautomat' || term_is_ancestor_of(get_term_by('slug', 'sykkeldelautomat', 'product_cat'), $term, 'product_cat')) {
                     $contains_sykkeldelautomat = true;
+                    break 2; // Exit both loops if found
                 }
             }
         }
@@ -56,16 +58,8 @@ function assign_pickup_code($order_id) {
 
         $email = $order->get_billing_email();
         $subject = "Pickup code for order $order_id";
-        
-		// $qrUrl = "https://quickchart.io/qr?text=" . urlencode($pickup_code) ;
-		// Now include this URL in your email HTML:
-		//$message = "
-		//	<p>Your order contains items from the Sykkeldelautomat.</p>
-		//	<p>Your pickup code is: <strong>$pickup_code</strong></p>
-		//	<p>Please use this code or scan the QR code below at the pickup station:</p>
-		//	<p><img src='$qrUrl' alt='QR Code' /></p>
-		//";
-		$message = "
+
+        $message = "
             <p>Your order includes items from the Sykkeldelautomat.</p>
             <p>Your pickup code is: <strong>$pickup_code</strong></p>
             <p>Enter your code on the pickup station keypad, starting and ending with an asterisk (*), to unlock the doors containing your items.</p>
