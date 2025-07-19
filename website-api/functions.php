@@ -40,18 +40,37 @@ function assign_pickup_code($order_id) {
     foreach ($items as $item) {
         $product_id = $item->get_product_id();
         $terms = get_the_terms($product_id, 'product_cat');
+        $is_in_sykkeldelautomat = false;
 
         if ($terms) {
             foreach ($terms as $term) {
                 // Check if term is sykkeldelautomat or a subcategory of it
                 if ($term->slug === 'sykkeldelautomat' || term_is_ancestor_of(get_term_by('slug', 'sykkeldelautomat', 'product_cat'), $term, 'product_cat')) {
-                    $contains_sykkeldelautomat = true;
-                    break 2; // Exit both loops if found
+                    $is_in_sykkeldelautomat = true;
+                    break;
                 }
+            }
+        }
+
+        // If in correct category, check for Door attribute
+        if ($is_in_sykkeldelautomat) {
+            $doorValue = null;
+            $product_attributes = get_post_meta($product_id, '_product_attributes', true);
+
+            if (!empty($product_attributes) && is_array($product_attributes)) {
+                if (isset($product_attributes['door']['value'])) {
+                    $doorValue = trim($product_attributes['door']['value']);
+                }
+            }
+
+            if (!empty($doorValue)) {
+                $contains_sykkeldelautomat = true;
+                break; // One match is enough, exit loop
             }
         }
     }
 
+    // Assign code and notify customer
     if ($contains_sykkeldelautomat) {
         $pickup_code = generate_unique_pickup_code();
         update_post_meta($order_id, '_pickup_code', $pickup_code);
