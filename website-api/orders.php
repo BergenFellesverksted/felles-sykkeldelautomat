@@ -102,9 +102,9 @@ if ($result->num_rows > 0) {
         $order_id = $row['order_id'];
         $product_name = $row['product_name'];
         $customer_name = trim($row['first_name'] . ' ' . $row['last_name']);
-        $pickup_code = $row['pickup_code'] ? $row['pickup_code'] : "Not Assigned";
-        $pickup_time = $row['pickup_time'] ? $row['pickup_time'] : "Not Picked Up";
-        $opening_code = $row['opening_code'] ? $row['opening_code'] : "Not Assigned";
+        $pickup_code = $row['pickup_code'] ? $row['pickup_code'] : "";
+        $pickup_time = $row['pickup_time'] ? $row['pickup_time'] : "";
+        $opening_code = $row['opening_code'] ? $row['opening_code'] : "";
         
         // Process opening_time field (may be serialized array)
         $opening_time = !empty($row['opening_time']) ? maybe_unserialize($row['opening_time']) : [];
@@ -240,11 +240,11 @@ if ($bookly_result->num_rows > 0) {
         $product_name = $row['product_name']; // Staff name is used as product name
         $customer_name = trim($row['first_name'] . ' ' . $row['last_name']); 
         $order_total = $row['order_total'] ? $row['order_total'] : "Unknown";
-        $pickup_code = $row['pickup_code'] ? $row['pickup_code'] : "Not Assigned";
-        $return_code = $row['return_code'] ? $row['return_code'] : "Not Assigned";
-        $pickup_time = $row['pickup_time'] ? $row['pickup_time'] : "Not Picked Up";
-        $return_time = $row['return_time'] ? $row['return_time'] : "Not Returned";
-        $opening_code = $row['opening_code'] ? $row['opening_code'] : "Not Assigned";
+        $pickup_code = $row['pickup_code'] ? $row['pickup_code'] : "";
+        $pickup_time = $row['pickup_time'] ? $row['pickup_time'] : "";
+        $return_code = $row['return_code'] ? $row['return_code'] : "";
+        $return_time = $row['return_time'] ? $row['return_time'] : "";
+        $opening_code = $row['opening_code'] ? $row['opening_code'] : "";
         
         // Process opening_time field
         $opening_time = !empty($row['opening_time']) ? maybe_unserialize($row['opening_time']) : [];

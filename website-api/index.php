@@ -129,8 +129,6 @@ if (!(isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true)) {
             <th>Order Total</th>
             <th>Pickup Code</th>
             <th>Pickup Time</th>
-            <th>Return Code</th>
-            <th>Return Time</th>
             <th>Opening Code</th>
             <th>Opening Times</th>
             <th>Start Time</th>
@@ -161,18 +159,20 @@ if (!(isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true)) {
                 let tableBody = $("#ordersTable tbody");
 
                 data.forEach(order => {
+                    // if pickup_code exists but pickup_time is null → mark the row red
+                    console.log(order);
+                    let rowStyle = (order.pickup_code != "" && order.pickup_time == "")
+                                 ? 'style="background-color: #f8d7da; !important;"' : '';
                     let itemsHTML = order.items.map(item => `- ${item.product_name} (Door: ${item.door})`).join("<br>");
                     let rowHTML = `
-                        <tr>
+                         <tr ${rowStyle}>
                             <td>${order.order_id}</td>
                             <td>${order.customer_name}</td>
                             <td>${order.order_date}</td>
                             <td>${order.order_total}</td>
                             <td>${order.pickup_code}</td>
                             <td>${order.pickup_time}</td>
-                            <td>${order.return_code ? order.return_code : "N/A"}</td>
-                            <td>${order.return_time ? order.return_time : "N/A"}</td>
-                            <td>${order.opening_code ? order.opening_code : "N/A"}</td>
+                            <td>${order.opening_code ? order.opening_code : ""}</td>
                             <td>${formatField(order.opening_time)}</td>
                             <td>${formatField(order.start_time)}</td>
                             <td>${formatField(order.end_time)}</td>
