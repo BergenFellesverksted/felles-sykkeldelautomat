@@ -11,7 +11,27 @@ from datetime import datetime, timedelta
 from pyzbar.pyzbar import decode
 from RPi import GPIO
 from RPLCD.i2c import CharLCD
-from constants import *  # Make sure DB_FILE, API_URL, API_KEY, OPEN_ALL_CODE, ALL_DOORS, etc. are defined here
+from constants import *  # DB_FILE, API_URL, API_KEY, OPEN_ALL_CODE, ALL_DOORS, SERIAL_PORT, etc.
+
+# ------------------------------------------------------------------------------
+# SAFE TEST TOGGLES (no side effects)
+# ------------------------------------------------------------------------------
+SAFE_NO_SEND = True              # do not call update_order_pickup.php
+SAFE_NO_OPEN = True              # do not touch the relays/serial
+SAFE_PRESERVE_OFFLINE = True     # keep existing offline_actions UNSYNCED during tests
+
+def _safe_log(msg: str):
+    print(f"[SAFE] {msg}")
+
+if SAFE_NO_SEND or SAFE_NO_OPEN:
+    enabled = []
+    if SAFE_NO_SEND:
+        enabled.append("NO_SEND")
+    if SAFE_NO_OPEN:
+        enabled.append("NO_OPEN")
+    if SAFE_PRESERVE_OFFLINE:
+        enabled.append("PRESERVE_OFFLINE")
+    _safe_log("SAFE MODE enabled: " + ", ".join(enabled))
 
 # ------------------------------------------------------------------------------
 # Constants
@@ -41,6 +61,44 @@ lcd.backlight_enabled = False
 GPIO.setmode(GPIO.BCM)
 GPIO.setup(ROW_PINS, GPIO.OUT, initial=GPIO.LOW)
 GPIO.setup(COL_PINS, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+
+# ------------------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------------------
+def _normalize_flag_text(v):
+    return (str(v or '')).strip().lower()
+
+def _is_not_picked_flag(v):
+    # Treat these as "not picked yet"
+    return _normalize_flag_text(v) in ('', 'not picked up', 'not picked', 'none', 'null', '0')
+
+def _parse_when(s):
+    """Best-effort parser for timestamps; returns datetime or None."""
+    if s is None:
+        return None
+    t = str(s).strip()
+    if not t:
+        return None
+    # common noise removals
+    if t.endswith('Z'):
+        t = t[:-1]
+    if t.upper().endswith(' UTC'):
+        t = t[:-4]
+    try:
+        return datetime.fromisoformat(t)
+    except Exception:
+        pass
+    for fmt in (
+        '%Y-%m-%d %H:%M',
+        '%Y-%m-%d %H:%M:%S',
+        '%Y-%m-%dT%H:%M',
+        '%Y-%m-%dT%H:%M:%S',
+    ):
+        try:
+            return datetime.strptime(t, fmt)
+        except Exception:
+            continue
+    return None
 
 # ------------------------------------------------------------------------------
 # Database Initialization
@@ -191,69 +249,51 @@ def offline_sync_loop():
         time.sleep(OFFLINE_SYNC_INTERVAL)
 
 # ------------------------------------------------------------------------------
-# Other Functions (Keypad, QR scanning, relay control, etc.)
+# Console-driven keypad: prompt first, then feed '*' + code + '*'
 # ------------------------------------------------------------------------------
-
-# --- NEW: helpers for robust code matching and time parsing ---
-def _normalize_flag_text(v):
-    return (str(v or '')).strip().lower()
-
-def _is_not_picked_flag(v):
-    # Treat these as "not picked yet"
-    return _normalize_flag_text(v) in ('', 'not picked up', 'not picked', 'none', 'null', '0')
-
-def _parse_when(s):
-    """Best-effort parser for timestamps; returns datetime or None."""
-    if s is None:
-        return None
-    t = str(s).strip()
-    if not t:
-        return None
-    if t.endswith('Z'):
-        t = t[:-1]
-    if t.upper().endswith(' UTC'):
-        t = t[:-4]
-    try:
-        return datetime.fromisoformat(t)
-    except Exception:
-        pass
-    for fmt in (
-        '%Y-%m-%d %H:%M',
-        '%Y-%m-%d %H:%M:%S',
-        '%Y-%m-%dT%H:%M',
-        '%Y-%m-%dT%H:%M:%S',
-    ):
-        try:
-            return datetime.strptime(t, fmt)
-        except Exception:
-            continue
-    return None
+_console_queue = []
 
 def read_keypad():
-    """Scans the keypad and returns the pressed key."""
-    for row_num, row_pin in enumerate(ROW_PINS):
-        GPIO.output(row_pin, GPIO.HIGH)
-        for col_num, col_pin in enumerate(COL_PINS):
-            if GPIO.input(col_pin) == GPIO.HIGH:
-                GPIO.output(row_pin, GPIO.LOW)
-                return KEYPAD[row_num][col_num]
-        GPIO.output(row_pin, GPIO.LOW)
-    return None
+    """Reads 'key presses'. In console mode, prompt for a code and feed '*' + code + '*'."""
+    if _console_queue:
+        k = _console_queue.pop(0)
+        print(f"[KEYPAD] {repr(k)}")
+        return k
 
+    try:
+        code_line = input("Please enter code: ").strip()
+    except KeyboardInterrupt:
+        raise
+    except Exception:
+        code_line = ""
+
+    if code_line == "":
+        # no input; emulate idle
+        return None
+
+    # Enqueue synthetic sequence: '*' (open), characters, '*' (submit)
+    _console_queue.extend(['*'] + list(code_line) + ['*'])
+    k = _console_queue.pop(0)
+    print(f"[KEYPAD] {repr(k)}")
+    return k
+
+# ------------------------------------------------------------------------------
+# Lookup & validation
+# ------------------------------------------------------------------------------
 def fetch_order_by_code(code):
     """
     Fetches an order by its code.
 
     For a pickup code:
       - If the order has not been picked up, it is valid.
-      - If the order was picked up, the code remains valid if within MINUTES_TO_ACCEPT_ORDER_AFTER_PICKUP minutes of the pickup time.
-      - Otherwise, returns (order_id, 'already_picked_up').
+      - If the order was picked up, the code remains valid if within MINUTES_TO_ACCEPT_ORDER_AFTER_PICKUP
+        minutes of the pickup time; otherwise returns (order_id, 'already_picked_up').
 
     For an opening code:
-      - It is valid only if the current time is between start_time and end_time.
-      - Otherwise, returns (order_id, 'not_in_opening_window').
-    
-    Also, if there is a recent unsynced offline action (within 15 minutes), the order is blocked.
+      - Valid only if current time is between start_time and end_time; else returns
+        (order_id, 'not_in_opening_window').
+
+    If a recent unsynced offline action (< 15 minutes) exists for the order, we block (None, None).
     If no order is found, returns (None, None).
     """
     code_raw = code or ""
@@ -262,6 +302,7 @@ def fetch_order_by_code(code):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
 
+    # Case-insensitive + trimmed matching to fix issues like 'c2c9' vs 'C2C9' and stray spaces
     cursor.execute("""
         SELECT order_id, pickup_code, pickup_time, opening_code, start_time, end_time
         FROM orders
@@ -269,13 +310,24 @@ def fetch_order_by_code(code):
            OR TRIM(opening_code) COLLATE NOCASE = TRIM(?)
     """, (code_trim, code_trim))
     order = cursor.fetchone()
+
     if order is None:
         conn.close()
+        print(f"[DEBUG] No order matched code='{code_trim}'. Check case/spaces in DB.")
         return (None, None)
     
     order_id, pickup_code, pickup_time, opening_code, start_time, end_time = order
 
-    # Check for recent unsynced offline actions (blocking further processing)
+    # Determine which field matched (for debugging)
+    matched_via = None
+    if pickup_code and str(pickup_code).strip().lower() == code_trim.lower():
+        matched_via = 'pickup_code'
+    elif opening_code and str(opening_code).strip().lower() == code_trim.lower():
+        matched_via = 'opening_code'
+    print(f"[DEBUG] Code matched order_id={order_id} via {matched_via}. "
+          f"pickup_time={pickup_time!r}, start_time={start_time!r}, end_time={end_time!r}")
+
+    # Block if recent unsynced offline action
     earliest_accepted_time = datetime.now() - timedelta(minutes=MINUTES_TO_ACCEPT_ORDER_AFTER_PICKUP)
     cursor.execute("""
         SELECT id FROM offline_actions
@@ -284,55 +336,53 @@ def fetch_order_by_code(code):
     offline_action = cursor.fetchone()
     if offline_action:
         conn.close()
+        print(f"[DEBUG] Order {order_id} blocked by recent unsynced offline action.")
         return (None, None)
 
     action = None
-
-    # Work out which column matched (case-insensitive, trimmed)
-    matched_via = None
-    if pickup_code and str(pickup_code).strip().lower() == code_trim.lower():
-        matched_via = 'pickup_code'
-    elif opening_code and str(opening_code).strip().lower() == code_trim.lower():
-        matched_via = 'opening_code'
-
+    # Pickup path
     if matched_via == 'pickup_code':
-        # Tolerant handling of pickup_time
         if _is_not_picked_flag(pickup_time):
             action = 'pickup'
         else:
             pickup_dt = _parse_when(pickup_time)
             if pickup_dt is None:
-                # Be tolerant: if unparsable, treat as "not picked yet"
+                # Be tolerant: treat unparsable as "not picked yet" instead of failing hard
+                print(f"[DEBUG] Unparsable pickup_time={pickup_time!r}; treating as NOT picked.")
                 action = 'pickup'
             else:
                 if datetime.now() <= pickup_dt + timedelta(minutes=MINUTES_TO_ACCEPT_ORDER_AFTER_PICKUP):
                     action = 'pickup'
                 else:
                     conn.close()
+                    print(f"[DEBUG] Order {order_id} already picked up beyond grace period.")
                     return (order_id, 'already_picked_up')
 
+    # Opening path
     elif matched_via == 'opening_code':
-        # For an opening code, ensure that start_time and end_time are configured and parseable.
         st_bad = (start_time is None) or (_normalize_flag_text(start_time) in ('', 'not started'))
         et_bad = (end_time is None) or (_normalize_flag_text(end_time) in ('', 'not ended'))
         if st_bad or et_bad:
             conn.close()
+            print(f"[DEBUG] Opening window not configured correctly for order {order_id}.")
             return (order_id, 'opening_not_configured')
 
         start_dt = _parse_when(start_time)
         end_dt = _parse_when(end_time)
         if not start_dt or not end_dt:
             conn.close()
+            print(f"[DEBUG] Could not parse opening window for order {order_id}.")
             return (None, None)
-
         if start_dt <= datetime.now() <= end_dt:
             action = 'opening'
         else:
             conn.close()
+            print(f"[DEBUG] Not in opening window for order {order_id}. Now not in [{start_dt}, {end_dt}].")
             return (order_id, 'not_in_opening_window')
 
     else:
         conn.close()
+        print(f"[DEBUG] Internal: code matched neither pickup nor opening? code='{code_trim}'")
         return (None, None)
 
     conn.close()
@@ -351,11 +401,28 @@ def send_order_update(order_id, action, action_time=None, store_on_fail=True):
     """
     Notifies the API that an order was picked up or opened, including action_time if provided.
     When store_on_fail is True, an unsynced action is inserted on failure.
+
+    SAFE MODE behavior:
+      - Do NOT perform the HTTP request when SAFE_NO_SEND is True.
+      - Do NOT insert offline_actions.
+      - Return True for normal calls so the flow continues.
+      - During offline sync passes (store_on_fail=False with action_time), return False
+        if SAFE_PRESERVE_OFFLINE is True, to avoid marking offline rows as 'synced'.
     """
     payload = {"api_key": API_KEY, "order_id": order_id, "action": action}
     if action_time:
         payload["action_time"] = action_time
 
+    # ---- SAFE MODE: no network updates ----
+    if SAFE_NO_SEND:
+        if store_on_fail is False and action_time is not None and SAFE_PRESERVE_OFFLINE:
+            _safe_log(f"Skip sending (offline sync pass) order={order_id} action={action} time={action_time} "
+                      f"-> returning False so existing offline_actions remain UNSYNCED")
+            return False  # prevents sync_offline_actions from marking as synced
+        _safe_log(f"Skip sending update: would GET {API_URL}update_order_pickup.php params={payload} -> returning True")
+        return True
+
+    # ---- ORIGINAL NETWORK PATH (unchanged) ----
     try:
         response = requests.get(API_URL + "update_order_pickup.php", params=payload)
         if response.status_code == 200:
@@ -381,13 +448,20 @@ def open_relays(doors):
     """Sends relay commands to Arduino to open specific doors in one batch."""
     if not doors:
         return
+    relay_commands = [f"{door}:{i*500}:1000" for i, door in enumerate(doors)]
+    command = f"OPEN:{','.join(relay_commands)}"
+
+    # ---- SAFE MODE: no relay activation ----
+    if SAFE_NO_OPEN:
+        _safe_log(f"Skip opening relays; would send -> {command}")
+        return
+
+    # ---- ORIGINAL SERIAL PATH (unchanged) ----
     try:
         ser = serial.Serial(SERIAL_PORT, 9600, timeout=1)
         time.sleep(2)
-        relay_commands = [f"{door}:{i*500}:1000" for i, door in enumerate(doors)]
-        command = f"OPEN:{','.join(relay_commands)}\n"
-        ser.write(command.encode())
-        print(f"Sent command: {command.strip()}")
+        ser.write((command + "\n").encode())
+        print(f"Sent command: {command}")
         ser.readline()
         ser.close()
     except Exception as e:
@@ -464,23 +538,25 @@ def process_code(code):
 # ------------------------------------------------------------------------------
 # Main Function
 # ------------------------------------------------------------------------------
+def _start_background_threads():
+    threading.Thread(target=orders_sync_loop, daemon=True).start()    # Sync orders from the API
+    threading.Thread(target=offline_sync_loop, daemon=True).start()   # Sync offline actions
+
 def main():
     """Main function handling keypad scanning and starting background threads."""
     initialize_database()
-
-    # Start background threads
-    threading.Thread(target=orders_sync_loop, daemon=True).start()    # Sync orders from the API
-    threading.Thread(target=offline_sync_loop, daemon=True).start()     # Sync offline actions
-    # threading.Thread(target=scan_qr_codes, daemon=True).start()       # Uncomment to enable QR scanning
 
     entered_code = ""
     last_input_time = None
     lcd.clear()
     lcd.backlight_enabled = False
 
+    # Start by prompting for a code first
+    threads_started = False
+
     try:
         while True:
-            key = read_keypad()
+            key = read_keypad()  # blocks for console input, returns '*', code chars, then '*'
             if key is not None:
                 last_input_time = time.time()
                 if key == '*':
@@ -491,10 +567,10 @@ def main():
                         last_input_time = time.time()
                     else:
                         print(f"Entered code: {entered_code}")
-                        if entered_code == OPEN_ALL_CODE:
+                        if entered_code.strip() == str(OPEN_ALL_CODE):
                             lcd.clear()
                             lcd.write_string("Opening ALL doors")
-                            open_relays(ALL_DOORS)  # ALL_DOORS is a list of door identifiers
+                            open_relays(ALL_DOORS)  # list of door identifiers
                             time.sleep(10)
                             lcd.clear()
                         else:
@@ -503,7 +579,7 @@ def main():
                             if not process_code(entered_code):
                                 lcd.clear()
                                 lcd.write_string("Checking online")
-                                fetch_orders_now()  # Update the database
+                                fetch_orders_now()  # Update the database from API
                                 if not process_code(entered_code):
                                     lcd.clear()
                                     lcd.write_string("Invalid Code!")
@@ -512,6 +588,12 @@ def main():
                         lcd.clear()
                         lcd.backlight_enabled = False
                         last_input_time = None
+
+                        # Start background threads after first submission
+                        if not threads_started:
+                            _start_background_threads()
+                            threads_started = True
+
                 elif key == '#':
                     entered_code = ""
                     lcd.clear()
